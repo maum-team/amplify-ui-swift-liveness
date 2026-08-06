@@ -13,6 +13,94 @@ import AVFoundation
 import Amplify
 @_spi(PredictionsFaceLiveness) import AWSPredictionsPlugin
 
+/// Type-erases a SwiftUI view builder so host applications can provide their
+/// own presentation without exposing FaceLiveness's internal state machine.
+public struct FaceLivenessViewFactory<Context> {
+    let makeView: (Context) -> AnyView
+
+    public init<Content: View>(
+        @ViewBuilder _ makeView: @escaping (Context) -> Content
+    ) {
+        self.makeView = { context in AnyView(makeView(context)) }
+    }
+}
+
+public struct FaceLivenessGetReadyContext {
+    public let showsPhotosensitivityWarning: Bool
+    public let cameraPosition: LivenessCamera
+    public let onBegin: () -> Void
+    public let onCancel: () -> Void
+}
+
+public struct FaceLivenessShootingContext {
+    public let instruction: String
+    public let progress: Double
+    public let showsGuideOval: Bool
+    public let onCancel: () -> Void
+}
+
+public struct FaceLivenessFreshnessContext {
+    public let instruction: String
+    public let onCancel: () -> Void
+}
+
+public struct FaceLivenessVerificationContext {
+    public let instruction: String
+    public let onCancel: () -> Void
+}
+
+/// Views supplied by a host application without coupling FaceLiveness to the
+/// host's UI dependencies. Camera capture, oval tracking, and the freshness
+/// challenge remain owned by FaceLiveness.
+public struct FaceLivenessViewCustomization {
+    let getReadyView: FaceLivenessViewFactory<FaceLivenessGetReadyContext>?
+    let shootingOverlay: FaceLivenessViewFactory<FaceLivenessShootingContext>?
+    let freshnessOverlay: FaceLivenessViewFactory<FaceLivenessFreshnessContext>?
+    let verificationOverlay: FaceLivenessViewFactory<FaceLivenessVerificationContext>?
+    let verificationAnimation: AnyView?
+    let usesFullScreenCameraPreview: Bool
+    let externalFreshnessController: FaceLivenessExternalFreshnessController?
+
+    public init() {
+        self.getReadyView = nil
+        self.shootingOverlay = nil
+        self.freshnessOverlay = nil
+        self.verificationOverlay = nil
+        self.verificationAnimation = nil
+        self.usesFullScreenCameraPreview = false
+        self.externalFreshnessController = nil
+    }
+
+    public init(
+        getReadyView: FaceLivenessViewFactory<FaceLivenessGetReadyContext>? = nil,
+        shootingOverlay: FaceLivenessViewFactory<FaceLivenessShootingContext>? = nil,
+        freshnessOverlay: FaceLivenessViewFactory<FaceLivenessFreshnessContext>? = nil,
+        verificationOverlay: FaceLivenessViewFactory<FaceLivenessVerificationContext>? = nil,
+        usesFullScreenCameraPreview: Bool = false,
+        externalFreshnessController: FaceLivenessExternalFreshnessController? = nil
+    ) {
+        self.getReadyView = getReadyView
+        self.shootingOverlay = shootingOverlay
+        self.freshnessOverlay = freshnessOverlay
+        self.verificationOverlay = verificationOverlay
+        self.verificationAnimation = nil
+        self.usesFullScreenCameraPreview = usesFullScreenCameraPreview
+        self.externalFreshnessController = externalFreshnessController
+    }
+
+    public init<VerificationAnimation: View>(
+        @ViewBuilder verificationAnimation: () -> VerificationAnimation
+    ) {
+        self.getReadyView = nil
+        self.shootingOverlay = nil
+        self.freshnessOverlay = nil
+        self.verificationOverlay = nil
+        self.verificationAnimation = AnyView(verificationAnimation())
+        self.usesFullScreenCameraPreview = false
+        self.externalFreshnessController = nil
+    }
+}
+
 public struct FaceLivenessDetectorView: View {
     @StateObject var viewModel: FaceLivenessDetectionViewModel
     @Binding var isPresented: Bool
@@ -26,6 +114,7 @@ public struct FaceLivenessDetectorView: View {
 
     let disableStartView: Bool
     let challengeOptions: ChallengeOptions
+    let viewCustomization: FaceLivenessViewCustomization
     let onCompletion: (Result<Void, FaceLivenessDetectionError>) -> Void
 
     let sessionTask: Task<FaceLivenessSession, Error>
@@ -36,6 +125,7 @@ public struct FaceLivenessDetectorView: View {
         region: String,
         disableStartView: Bool = false,
         challengeOptions: ChallengeOptions = .init(),
+        viewCustomization: FaceLivenessViewCustomization = .init(),
         isPresented: Binding<Bool>,
         onCompletion: @escaping (Result<Void, FaceLivenessDetectionError>) -> Void
     ) {        
@@ -43,6 +133,7 @@ public struct FaceLivenessDetectorView: View {
         self._isPresented = isPresented
         self.onCompletion = onCompletion
         self.challengeOptions = challengeOptions
+        self.viewCustomization = viewCustomization
 
         self.sessionTask = Task {
             let session = try await AWSPredictionsPlugin.startFaceLivenessSession(
@@ -65,8 +156,7 @@ public struct FaceLivenessDetectorView: View {
             assetWriterInput: LivenessAVAssetWriterInput()
         )
 
-        self._viewModel = StateObject(
-            wrappedValue: .init(
+        let viewModel = FaceLivenessDetectionViewModel(
                 faceDetector: faceDetector,
                 faceInOvalMatching: faceInOvalStateMatching,
                 videoChunker: videoChunker,
@@ -74,8 +164,10 @@ public struct FaceLivenessDetectorView: View {
                 sessionID: sessionID,
                 isPreviewScreenEnabled: !disableStartView,
                 challengeOptions: challengeOptions
-            )
         )
+        viewModel.externalFreshnessController = viewCustomization.externalFreshnessController
+        viewModel.usesFullScreenCameraPreview = viewCustomization.usesFullScreenCameraPreview
+        self._viewModel = StateObject(wrappedValue: viewModel)
     }
     
     init(
@@ -84,6 +176,7 @@ public struct FaceLivenessDetectorView: View {
         region: String,
         disableStartView: Bool = false,
         challengeOptions: ChallengeOptions = .init(),
+        viewCustomization: FaceLivenessViewCustomization = .init(),
         isPresented: Binding<Bool>,
         onCompletion: @escaping (Result<Void, FaceLivenessDetectionError>) -> Void,
         captureSession: LivenessCaptureSession
@@ -92,6 +185,7 @@ public struct FaceLivenessDetectorView: View {
         self._isPresented = isPresented
         self.onCompletion = onCompletion
         self.challengeOptions = challengeOptions
+        self.viewCustomization = viewCustomization
 
         self.sessionTask = Task {
             let session = try await AWSPredictionsPlugin.startFaceLivenessSession(
@@ -107,8 +201,7 @@ public struct FaceLivenessDetectorView: View {
             instructor: Instructor()
         )
 
-        self._viewModel = StateObject(
-            wrappedValue: .init(
+        let viewModel = FaceLivenessDetectionViewModel(
                 faceDetector: captureSession.outputSampleBufferCapturer!.faceDetector,
                 faceInOvalMatching: faceInOvalStateMatching,
                 videoChunker: captureSession.outputSampleBufferCapturer!.videoChunker,
@@ -116,8 +209,10 @@ public struct FaceLivenessDetectorView: View {
                 sessionID: sessionID,
                 isPreviewScreenEnabled: !disableStartView,
                 challengeOptions: challengeOptions
-            )
         )
+        viewModel.externalFreshnessController = viewCustomization.externalFreshnessController
+        viewModel.usesFullScreenCameraPreview = viewCustomization.usesFullScreenCameraPreview
+        self._viewModel = StateObject(wrappedValue: viewModel)
     }
 
     public var body: some View {
@@ -209,21 +304,37 @@ public struct FaceLivenessDetectorView: View {
                     }
                 }
         case .displayingGetReadyView(let challenge, let cameraPosition):
-            GetReadyPageView(
-                onBegin: {
-                    guard displayState != .displayingLiveness else { return }
-                    displayState = .displayingLiveness
-                },
-                beginCheckButtonDisabled: false,
-                challenge: challenge,
-                cameraPosition: cameraPosition
-            )
+            let onBegin = {
+                guard displayState != .displayingLiveness else { return }
+                displayState = .displayingLiveness
+            }
+
+            Group {
+                if let getReadyView = viewCustomization.getReadyView {
+                    getReadyView.makeView(
+                        FaceLivenessGetReadyContext(
+                            showsPhotosensitivityWarning: challenge == .faceMovementAndLightChallenge("2.0.0"),
+                            cameraPosition: cameraPosition,
+                            onBegin: onBegin,
+                            onCancel: viewModel.closeButtonAction
+                        )
+                    )
+                } else {
+                    GetReadyPageView(
+                        onBegin: onBegin,
+                        beginCheckButtonDisabled: false,
+                        challenge: challenge,
+                        cameraPosition: cameraPosition
+                    )
+                }
+            }
             .onAppear {
                 setBrightnessToMax()
             }
         case .displayingLiveness:
             _FaceLivenessDetectionView(
                 viewModel: viewModel,
+                viewCustomization: viewCustomization,
                 videoView: {
                     CameraView(
                         faceLivenessDetectionViewModel: viewModel
@@ -408,9 +519,46 @@ public struct FaceMovementChallengeOption {
 public struct FaceMovementAndLightChallengeOption {
     let challenge: Challenge
     let camera: LivenessCamera
-    
+
     public init() {
         self.challenge = .faceMovementAndLightChallenge("2.0.0")
         self.camera = .front
     }
 }
+
+#if DEBUG
+/// `FaceLivenessDetectorView` itself can't be previewed: its initializer opens a
+/// live AWS session, so the canvas would only ever show the connecting spinner.
+/// These previews render the screens it drives, one per `DisplayState`.
+struct FaceLivenessDetectorView_Previews: PreviewProvider {
+    static func liveness(_ state: LivenessStateMachine.State) -> some View {
+        _FaceLivenessDetectionView(
+            viewModel: .preview(state: state),
+            videoView: { PreviewCameraPlaceholder() }
+        )
+    }
+
+    static var previews: some View {
+        Group {
+            LoadingPageView()
+                .previewDisplayName("1 · Connecting")
+
+            CameraPermissionView()
+                .previewDisplayName("2 · Camera permission")
+
+            GetReadyPageView(
+                onBegin: {},
+                challenge: .faceMovementAndLightChallenge("2.0.0"),
+                cameraPosition: .front
+            )
+            .previewDisplayName("3 · Get ready")
+
+            liveness(.awaitingFaceInOvalMatch(.moveFaceCloser, 0.4))
+                .previewDisplayName("4 · Liveness (move closer)")
+
+            liveness(.displayingFreshness)
+                .previewDisplayName("5 · Liveness (hold still)")
+        }
+    }
+}
+#endif

@@ -10,6 +10,7 @@ import AVFoundation
 import Vision
 import Amplify
 @_spi(PredictionsFaceLiveness) import AWSPredictionsPlugin
+import SwiftUI
 
 final class _LivenessViewController: UIViewController {
     let viewModel: FaceLivenessDetectionViewModel
@@ -51,7 +52,14 @@ final class _LivenessViewController: UIViewController {
     }
 
     override func viewDidLayoutSubviews() {
-        previewLayer?.position = view.center
+        super.viewDidLayoutSubviews()
+        guard let previewLayer else { return }
+
+        if viewModel.usesFullScreenCameraPreview {
+            previewLayer.frame = view.bounds
+        } else {
+            previewLayer.position = view.center
+        }
     }
 
     private func layoutSubviews() {
@@ -69,11 +77,11 @@ final class _LivenessViewController: UIViewController {
 
     private func setupAVLayer() {
         guard previewLayer == nil else { return }
-        let x = view.frame.minX
-        let y = view.frame.minY
         let width = view.frame.width
         let height = width / 3 * 4
-        let cameraFrame = CGRect(x: x, y: y, width: width, height: height)
+        let cameraFrame = viewModel.usesFullScreenCameraPreview
+            ? view.bounds
+            : CGRect(x: 0, y: 0, width: width, height: height)
 
         guard let avLayer = viewModel.configureCamera(withinFrame: cameraFrame) else {
             DispatchQueue.main.async { [weak self] in
@@ -83,11 +91,11 @@ final class _LivenessViewController: UIViewController {
             return
         }
 
-        avLayer.position = view.center
-        self.previewLayer = avLayer
-        if let previewLayer = self.previewLayer {
-            viewModel.cameraViewRect = previewLayer.frame
+        if !viewModel.usesFullScreenCameraPreview {
+            avLayer.position = view.center
         }
+        self.previewLayer = avLayer
+        viewModel.cameraViewRect = CGRect(x: 0, y: 0, width: width, height: height)
 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -119,8 +127,21 @@ extension _LivenessViewController: FaceLivenessViewControllerPresenter {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             guard let previewLayer = self.previewLayer else { return }
+
+            if let externalController = self.viewModel.externalFreshnessController,
+               externalController.rendersOvalExternally {
+                // The RN verification overlay owns this transition. Keep the
+                // correctly cropped preview underneath instead of replacing
+                // it with the raw 3:4 capture frame.
+                self.viewModel.stopRecording()
+                return
+            }
+
             let imageView = UIImageView(image: uiImage)
-            imageView.frame = previewLayer.frame
+            imageView.frame = self.view.bounds
+            imageView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            imageView.contentMode = .scaleAspectFill
+            imageView.clipsToBounds = true
             self.view.addSubview(imageView)
             (previewLayer as? AVCaptureVideoPreviewLayer)?.session = nil
             previewLayer.removeFromSuperlayer()
@@ -129,7 +150,22 @@ extension _LivenessViewController: FaceLivenessViewControllerPresenter {
     }
 
     func displayFreshness(colorSequences: [FaceLivenessSession.DisplayColor]) {
+        if let externalFreshnessController = viewModel.externalFreshnessController {
+            displayExternalFreshness(
+                colorSequences: colorSequences,
+                controller: externalFreshnessController
+            )
+            return
+        }
+
         self.ovalView?.setNeedsDisplay()
+        if let ovalView {
+            let freshnessOvalFrame = ovalView.convert(
+                ovalView.ovalFrame,
+                to: freshnessView
+            )
+            freshnessView.startOvalPulse(in: freshnessOvalFrame)
+        }
         DispatchQueue.main.async { [weak self] in
             self?.viewModel.livenessState.displayingFreshness()
         }
@@ -143,6 +179,7 @@ extension _LivenessViewController: FaceLivenessViewControllerPresenter {
             },
             onComplete: { [weak self] in
                 guard let self else { return }
+                self.freshnessView.stopOvalPulse()
                 self.freshnessView.removeFromSuperview()
 
                 self.viewModel.handleFreshnessComplete()
@@ -166,12 +203,64 @@ extension _LivenessViewController: FaceLivenessViewControllerPresenter {
             guard let self else { return }
             guard let previewLayer = self.previewLayer else { return }
 
+            let awsOvalFrameInView: CGRect
+            if self.viewModel.usesFullScreenCameraPreview {
+                awsOvalFrameInView = FaceLivenessPreviewGeometry.aspectFill(
+                    rect: ovalRect,
+                    sourceSize: self.viewModel.cameraViewRect.size,
+                    destinationRect: self.view.bounds
+                )
+            } else {
+                awsOvalFrameInView = previewLayer.convert(ovalRect, to: self.view.layer)
+            }
+
+            if let externalController = self.viewModel.externalFreshnessController,
+               externalController.rendersOvalExternally {
+                let ovalFrameInView: CGRect
+                if self.viewModel.usesFullScreenCameraPreview,
+                   let configuration = externalController.matchingOvalConfiguration,
+                   configuration.referenceViewportWidth > 0,
+                   configuration.referenceViewportHeight > 0 {
+                    let scale = min(
+                        self.view.bounds.width / configuration.referenceViewportWidth,
+                        self.view.bounds.height / configuration.referenceViewportHeight
+                    )
+                    let size = CGSize(
+                        width: min(self.view.bounds.width, configuration.width * scale),
+                        height: min(self.view.bounds.height, configuration.height * scale)
+                    )
+                    ovalFrameInView = CGRect(
+                        x: awsOvalFrameInView.midX - size.width / 2,
+                        y: awsOvalFrameInView.midY - size.height / 2,
+                        width: size.width,
+                        height: size.height
+                    )
+                    self.viewModel.matchingOvalRectOverride =
+                        FaceLivenessPreviewGeometry.inverseAspectFill(
+                            rect: ovalFrameInView,
+                            sourceSize: self.viewModel.cameraViewRect.size,
+                            destinationRect: self.view.bounds
+                        )
+                } else {
+                    ovalFrameInView = awsOvalFrameInView
+                    self.viewModel.matchingOvalRectOverride = nil
+                }
+
+                externalController.publishOval(
+                    frame: ovalFrameInView,
+                    viewport: self.view.bounds
+                )
+                self.ovalRect = ovalRect
+                self.ovalExists = true
+                return
+            }
+
             let ovalView = OvalView(
-                frame: previewLayer.frame,
-                ovalFrame: ovalRect
+                frame: self.view.bounds,
+                ovalFrame: awsOvalFrameInView
             )
+            ovalView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             self.ovalView = ovalView
-            ovalView.center = previewLayer.position
             self.view.insertSubview(
                 ovalView,
                 belowSubview: self.freshnessView
@@ -186,3 +275,25 @@ extension _LivenessViewController: FaceLivenessViewControllerPresenter {
         self.viewModel.completeNoLightCheck()
     }
 }
+
+#if DEBUG
+struct LivenessViewController_Previews: PreviewProvider {
+    static var previews: some View {
+        Group {
+            // Camera stand-in + the real `OvalView`. Renders in the simulator.
+            ZStack {
+                Color.black
+                PreviewCameraPlaceholder()
+            }
+            .edgesIgnoringSafeArea(.all)
+            .previewDisplayName("Overlay (simulator)")
+
+            // The real AV layer. Only meaningful when the preview runs on a
+            // device — the simulator has no camera, so this stays black.
+            CameraView(faceLivenessDetectionViewModel: .preview())
+                .edgesIgnoringSafeArea(.all)
+                .previewDisplayName("Camera (device only)")
+        }
+    }
+}
+#endif
