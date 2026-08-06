@@ -26,6 +26,8 @@ class FaceLivenessDetectionViewModel: ObservableObject {
     let videoChunker: VideoChunker
     let sessionID: String
     var livenessService: LivenessService?
+    weak var externalFreshnessController: FaceLivenessExternalFreshnessController?
+    var usesFullScreenCameraPreview = false
     let faceDetector: FaceDetector
     let faceInOvalMatching: FaceInOvalMatching
     let challengeID: String = UUID().uuidString
@@ -40,6 +42,10 @@ class FaceLivenessDetectionViewModel: ObservableObject {
     var provideSingleFrame: ((UIImage) -> Void)?
     var cameraViewRect = CGRect.zero
     var ovalRect = CGRect.zero
+    var matchingOvalRectOverride: CGRect?
+    var effectiveMatchingOvalRect: CGRect {
+        matchingOvalRectOverride ?? ovalRect
+    }
     var initialClientEvent: InitialClientEvent?
     var faceMatchedTimestamp: UInt64?
     var noFitStartTime: Date?

@@ -40,8 +40,11 @@ extension FaceLivenessDetectionViewModel: FaceDetectionResultHandler {
             }
             
             var normalizedFace = normalizeFace(face)
+            let matchingOvalRect = effectiveMatchingOvalRect
+            let matchingToleranceMultiplier =
+                externalFreshnessController?.matchingToleranceMultiplier ?? 1
             normalizedFace.boundingBox = normalizedFace.boundingBoxFromLandmarks(
-                ovalRect: ovalRect,
+                ovalRect: matchingOvalRect,
                 ovalMatchChallenge: ovalMatchChallenge)
 
             switch livenessState.state {
@@ -70,8 +73,9 @@ extension FaceLivenessDetectionViewModel: FaceDetectionResultHandler {
             case .recording(ovalDisplayed: true):
                 let instruction = faceInOvalMatching.faceMatchState(
                     for: normalizedFace.boundingBox,
-                    in: ovalRect,
-                    challengeConfig: ovalMatchChallenge
+                    in: matchingOvalRect,
+                    challengeConfig: ovalMatchChallenge,
+                    toleranceMultiplier: matchingToleranceMultiplier
                 )
 
                 handleInstruction(
@@ -81,8 +85,9 @@ extension FaceLivenessDetectionViewModel: FaceDetectionResultHandler {
             case .awaitingFaceInOvalMatch:
                 let instruction = faceInOvalMatching.faceMatchState(
                     for: normalizedFace.boundingBox,
-                    in: ovalRect,
-                    challengeConfig: ovalMatchChallenge
+                    in: matchingOvalRect,
+                    challengeConfig: ovalMatchChallenge,
+                    toleranceMultiplier: matchingToleranceMultiplier
                 )
 
                 handleInstruction(

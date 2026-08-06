@@ -19,14 +19,19 @@ struct FaceInOvalMatching {
     func faceMatchState(
         for face: CGRect,
         in ovalRect: CGRect?,
-        challengeConfig: FaceLivenessSession.OvalMatchChallenge
+        challengeConfig: FaceLivenessSession.OvalMatchChallenge,
+        toleranceMultiplier: Double = 1
     ) -> Instructor.Instruction {
         guard let oval = ovalRect else {
             return .none
         }
 
         let intersection = intersectionOverUnion(boxA: face, boxB: oval)
-        let thresholds = Thresholds(oval: oval, challengeConfig: challengeConfig)
+        let thresholds = Thresholds(
+            oval: oval,
+            challengeConfig: challengeConfig,
+            toleranceMultiplier: toleranceMultiplier
+        )
 
         if storage.initialIOU == nil {
             storage.initialIOU = intersection
@@ -97,10 +102,15 @@ extension FaceInOvalMatching {
         let faceDetectionWidth: Double
         let faceDetectionHeight: Double
 
-        init(oval: CGRect, challengeConfig: FaceLivenessSession.OvalMatchChallenge) {
-            intersection = challengeConfig.oval.iouThreshold
-            ovalMatchWidth = oval.width * challengeConfig.oval.iouWidthThreshold
-            ovalMatchHeight = oval.height * challengeConfig.oval.iouHeightThreshold
+        init(
+            oval: CGRect,
+            challengeConfig: FaceLivenessSession.OvalMatchChallenge,
+            toleranceMultiplier: Double = 1
+        ) {
+            let tolerance = min(max(toleranceMultiplier, 1), 1.25)
+            intersection = challengeConfig.oval.iouThreshold / tolerance
+            ovalMatchWidth = oval.width * challengeConfig.oval.iouWidthThreshold * tolerance
+            ovalMatchHeight = oval.height * challengeConfig.oval.iouHeightThreshold * tolerance
             faceDetectionWidth = oval.width * challengeConfig.face.iouWidthThreshold
             faceDetectionHeight = oval.height * challengeConfig.face.iouHeightThreshold
         }
