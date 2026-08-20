@@ -27,7 +27,6 @@ public struct FaceLivenessViewFactory<Context> {
 
 public struct FaceLivenessGetReadyContext {
     public let showsPhotosensitivityWarning: Bool
-    public let cameraPosition: LivenessCamera
     public let onBegin: () -> Void
     public let onCancel: () -> Void
 }
@@ -57,7 +56,6 @@ public struct FaceLivenessViewCustomization {
     let shootingOverlay: FaceLivenessViewFactory<FaceLivenessShootingContext>?
     let freshnessOverlay: FaceLivenessViewFactory<FaceLivenessFreshnessContext>?
     let verificationOverlay: FaceLivenessViewFactory<FaceLivenessVerificationContext>?
-    let verificationAnimation: AnyView?
     let usesFullScreenCameraPreview: Bool
     let externalFreshnessController: FaceLivenessExternalFreshnessController?
 
@@ -66,7 +64,6 @@ public struct FaceLivenessViewCustomization {
         self.shootingOverlay = nil
         self.freshnessOverlay = nil
         self.verificationOverlay = nil
-        self.verificationAnimation = nil
         self.usesFullScreenCameraPreview = false
         self.externalFreshnessController = nil
     }
@@ -83,21 +80,8 @@ public struct FaceLivenessViewCustomization {
         self.shootingOverlay = shootingOverlay
         self.freshnessOverlay = freshnessOverlay
         self.verificationOverlay = verificationOverlay
-        self.verificationAnimation = nil
         self.usesFullScreenCameraPreview = usesFullScreenCameraPreview
         self.externalFreshnessController = externalFreshnessController
-    }
-
-    public init<VerificationAnimation: View>(
-        @ViewBuilder verificationAnimation: () -> VerificationAnimation
-    ) {
-        self.getReadyView = nil
-        self.shootingOverlay = nil
-        self.freshnessOverlay = nil
-        self.verificationOverlay = nil
-        self.verificationAnimation = AnyView(verificationAnimation())
-        self.usesFullScreenCameraPreview = false
-        self.externalFreshnessController = nil
     }
 }
 
@@ -301,7 +285,6 @@ public struct FaceLivenessDetectorView: View {
                     getReadyView.makeView(
                         FaceLivenessGetReadyContext(
                             showsPhotosensitivityWarning: challenge == .faceMovementAndLightChallenge("2.0.0"),
-                            cameraPosition: cameraPosition,
                             onBegin: onBegin,
                             onCancel: viewModel.closeButtonAction
                         )

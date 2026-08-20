@@ -26,11 +26,10 @@ class OvalView: UIView {
     }
 
     let ovalFrame: CGRect
-    let style: Style
+    private let style = Style.default
 
-    init(frame: CGRect, ovalFrame: CGRect, style: Style = .default) {
+    init(frame: CGRect, ovalFrame: CGRect) {
         self.ovalFrame = ovalFrame
-        self.style = style
         super.init(frame: frame)
         backgroundColor = .clear
     }

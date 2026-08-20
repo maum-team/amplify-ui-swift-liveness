@@ -8,16 +8,23 @@
 import Foundation
 @_spi(PredictionsFaceLiveness) import AWSPredictionsPlugin
 
-/// A color transition emitted by the AWS freshness challenge.
-///
-/// This contains presentation metadata only. It intentionally excludes the
-/// session identifier, camera frames, face geometry, and credentials.
-public struct FaceLivenessFreshnessColorEvent {
-    public let sequenceNumber: Int
+/// A single color transition inside a preloaded freshness sequence.
+public struct FaceLivenessFreshnessFrame {
     public let currentColor: [Int]
     public let previousColor: [Int]
     public let durationMilliseconds: Double
     public let shouldScroll: Bool
+}
+
+/// The whole AWS freshness sequence, handed to the host in one dispatch.
+///
+/// This contains presentation metadata only. It intentionally excludes the
+/// session identifier, camera frames, face geometry, and credentials.
+///
+/// The host renders the colors on its own clock, so the challenge never pays a
+/// bridge round trip per color transition.
+public struct FaceLivenessFreshnessSequenceEvent {
+    public let frames: [FaceLivenessFreshnessFrame]
     public let nativeDispatchedAt: UInt64
 }
 
@@ -64,7 +71,7 @@ public struct FaceLivenessExternalMatchingOvalConfiguration {
 @MainActor
 public final class FaceLivenessExternalFreshnessController {
     public var onStarted: ((UInt64) -> Void)?
-    public var onColorChanged: ((FaceLivenessFreshnessColorEvent) -> Void)?
+    public var onFreshnessSequencePrepared: ((FaceLivenessFreshnessSequenceEvent) -> Void)?
     public var onCompleted: ((UInt64) -> Void)?
     public var onUiStateChanged: ((FaceLivenessExternalUiStateEvent) -> Void)?
     public var onOvalChanged: ((FaceLivenessExternalOvalEvent) -> Void)?
@@ -73,12 +80,7 @@ public final class FaceLivenessExternalFreshnessController {
     /// Local client-side fit tolerance. `1` preserves the AWS challenge values.
     public var matchingToleranceMultiplier = 1.0
 
-    private struct PendingColor {
-        let event: Freshness.ColorEvent
-        let onAcknowledged: (Freshness.ColorEvent) -> Void
-    }
-
-    private var pendingColors: [Int: PendingColor] = [:]
+    private var pendingPlaybackStart: (() -> Void)?
     private var playbackTask: Task<Void, Never>?
 
     public init() {}
@@ -90,13 +92,69 @@ public final class FaceLivenessExternalFreshnessController {
     /// Drives the AWS-provided sequence with a monotonic task clock while the
     /// host renders each transition. This avoids running the native 10ms
     /// Auto Layout animation behind an external renderer.
+    ///
+    /// The whole sequence reaches `onFreshnessSequencePrepared` in a single
+    /// dispatch, and playback starts on one `acknowledgeFreshnessReady()`.
+    /// Every color transition after that stays on this side of the bridge.
+    /// Without a subscriber there is nothing to wait for, so playback starts
+    /// right away on the native clock.
     func play(
         _ colorSequences: [FaceLivenessSession.DisplayColor],
         onAcknowledged: @escaping (Freshness.ColorEvent) -> Void,
         onComplete: @escaping () -> Void
     ) {
         playbackTask?.cancel()
-        start(at: Date().timestampMilliseconds)
+        pendingPlaybackStart = nil
+
+        guard let onFreshnessSequencePrepared else {
+            startPlayback(
+                colorSequences,
+                onAcknowledged: onAcknowledged,
+                onComplete: onComplete
+            )
+            return
+        }
+
+        pendingPlaybackStart = { [weak self] in
+            self?.startPlayback(
+                colorSequences,
+                onAcknowledged: onAcknowledged,
+                onComplete: onComplete
+            )
+        }
+        onFreshnessSequencePrepared(
+            FaceLivenessFreshnessSequenceEvent(
+                frames: colorSequences.enumerated().map { sequenceNumber, currentColor in
+                    let previousColor = sequenceNumber > 0
+                        ? colorSequences[sequenceNumber - 1]
+                        : currentColor
+                    return FaceLivenessFreshnessFrame(
+                        currentColor: currentColor.rgb._values,
+                        previousColor: previousColor.rgb._values,
+                        durationMilliseconds: currentColor.duration,
+                        shouldScroll: currentColor.shouldScroll
+                    )
+                },
+                nativeDispatchedAt: Date().timestampMilliseconds
+            )
+        )
+    }
+
+    /// Starts native playback once the host reports the sequence is on screen.
+    ///
+    /// Called at most once per prepared sequence; later calls are ignored.
+    public func acknowledgeFreshnessReady() {
+        let startPlayback = pendingPlaybackStart
+        pendingPlaybackStart = nil
+        startPlayback?()
+    }
+
+    private func startPlayback(
+        _ colorSequences: [FaceLivenessSession.DisplayColor],
+        onAcknowledged: @escaping (Freshness.ColorEvent) -> Void,
+        onComplete: @escaping () -> Void
+    ) {
+        onStarted?(Date().timestampMilliseconds)
 
         playbackTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -107,14 +165,14 @@ public final class FaceLivenessExternalFreshnessController {
                 let previousColor = sequenceNumber > 0
                     ? colorSequences[sequenceNumber - 1]
                     : currentColor
-                let event = Freshness.ColorEvent(
-                    currentColor: currentColor,
-                    previousColor: previousColor,
-                    sequenceNumber: sequenceNumber,
-                    colorStartTime: Date().timestampMilliseconds
+                onAcknowledged(
+                    Freshness.ColorEvent(
+                        currentColor: currentColor,
+                        previousColor: previousColor,
+                        sequenceNumber: sequenceNumber,
+                        colorStartTime: Date().timestampMilliseconds
+                    )
                 )
-
-                publish(event, onAcknowledged: onAcknowledged)
 
                 let durationNanoseconds = UInt64(
                     max(0, currentColor.duration) * 1_000_000
@@ -127,7 +185,7 @@ public final class FaceLivenessExternalFreshnessController {
             }
 
             guard !Task.isCancelled else { return }
-            complete(at: Date().timestampMilliseconds)
+            onCompleted?(Date().timestampMilliseconds)
             playbackTask = nil
             onComplete()
         }
@@ -136,7 +194,7 @@ public final class FaceLivenessExternalFreshnessController {
     public func cancelPlayback() {
         playbackTask?.cancel()
         playbackTask = nil
-        pendingColors.removeAll()
+        pendingPlaybackStart = nil
     }
 
     public func publishUiState(
@@ -161,68 +219,6 @@ public final class FaceLivenessExternalFreshnessController {
                 y: frame.minY / viewport.height,
                 width: frame.width / viewport.width,
                 height: frame.height / viewport.height
-            )
-        )
-    }
-
-    func start(at timestamp: UInt64) {
-        pendingColors.removeAll()
-        onStarted?(timestamp)
-    }
-
-    func publish(
-        _ event: Freshness.ColorEvent,
-        onAcknowledged: @escaping (Freshness.ColorEvent) -> Void
-    ) {
-        pendingColors[event.sequenceNumber] = PendingColor(
-            event: event,
-            onAcknowledged: onAcknowledged
-        )
-        onColorChanged?(
-            FaceLivenessFreshnessColorEvent(
-                sequenceNumber: event.sequenceNumber,
-                currentColor: event.currentColor.rgb._values,
-                previousColor: event.previousColor.rgb._values,
-                durationMilliseconds: event.currentColor.duration,
-                shouldScroll: event.currentColor.shouldScroll,
-                nativeDispatchedAt: event.colorStartTime
-            )
-        )
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-            self?.resolve(
-                sequenceNumber: event.sequenceNumber,
-                displayedAt: Date().timestampMilliseconds
-            )
-        }
-    }
-
-    /// Confirms when the externally rendered color reached the host UI.
-    public func acknowledgeColorDisplayed(
-        sequenceNumber: Int,
-        displayedAt: UInt64
-    ) {
-        resolve(sequenceNumber: sequenceNumber, displayedAt: displayedAt)
-    }
-
-    func complete(at timestamp: UInt64) {
-        for sequenceNumber in pendingColors.keys.sorted() {
-            resolve(sequenceNumber: sequenceNumber, displayedAt: timestamp)
-        }
-        onCompleted?(timestamp)
-    }
-
-    private func resolve(sequenceNumber: Int, displayedAt: UInt64) {
-        guard let pending = pendingColors.removeValue(forKey: sequenceNumber) else {
-            return
-        }
-
-        pending.onAcknowledged(
-            Freshness.ColorEvent(
-                currentColor: pending.event.currentColor,
-                previousColor: pending.event.previousColor,
-                sequenceNumber: pending.event.sequenceNumber,
-                colorStartTime: displayedAt
             )
         )
     }
