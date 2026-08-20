@@ -72,10 +72,7 @@ struct _FaceLivenessDetectionView<VideoView: View>: View {
                 if let verificationOverlay = viewCustomization.verificationOverlay {
                     verificationOverlay.makeView(context)
                 } else {
-                    VerificationOverlay(
-                        animation: viewCustomization.verificationAnimation,
-                        closeAction: context.onCancel
-                    )
+                    VerificationOverlay(closeAction: context.onCancel)
                 }
             } else {
                 LegacyLivenessOverlay(viewModel: viewModel)
@@ -132,7 +129,6 @@ private struct ShootingOverlay: View {
 }
 
 private struct VerificationOverlay: View {
-    let animation: AnyView?
     let closeAction: () -> Void
 
     private let instruction = LocalizedStrings.challenge_verifying
@@ -162,10 +158,7 @@ private struct VerificationOverlay: View {
                     )
                     .allowsHitTesting(false)
 
-                VerificationAnimationView(
-                    animation: animation,
-                    size: metrics.faceScanSize
-                )
+                VerificationAnimationView(size: metrics.faceScanSize)
                     .position(
                         x: geometry.size.width / 2,
                         y: geometry.size.height / 2
@@ -186,17 +179,10 @@ private struct VerificationOverlay: View {
 }
 
 private struct VerificationAnimationView: View {
-    let animation: AnyView?
     let size: CGFloat
 
     var body: some View {
-        Group {
-            if let animation {
-                animation
-            } else {
-                ProgressView()
-            }
-        }
+        ProgressView()
             .frame(width: size, height: size)
             .allowsHitTesting(false)
             .accessibilityHidden(true)

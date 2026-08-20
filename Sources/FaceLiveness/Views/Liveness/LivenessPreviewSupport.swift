@@ -40,10 +40,6 @@ extension FaceLivenessDetectionViewModel {
 /// Lays out a real `OvalView` at roughly the proportions the service returns,
 /// so previews render the production drawing code rather than a mock shape.
 private final class OvalPreviewContainer: UIView {
-    var style: OvalView.Style = .default {
-        didSet { setNeedsLayout() }
-    }
-
     private var ovalView: OvalView?
 
     override func layoutSubviews() {
@@ -61,22 +57,18 @@ private final class OvalPreviewContainer: UIView {
             height: height
         )
 
-        let view = OvalView(frame: bounds, ovalFrame: ovalFrame, style: style)
+        let view = OvalView(frame: bounds, ovalFrame: ovalFrame)
         addSubview(view)
         ovalView = view
     }
 }
 
 struct PreviewOvalView: UIViewRepresentable {
-    var style: OvalView.Style = .default
-
     func makeUIView(context: Context) -> UIView {
         OvalPreviewContainer()
     }
 
-    func updateUIView(_ uiView: UIView, context: Context) {
-        (uiView as? OvalPreviewContainer)?.style = style
-    }
+    func updateUIView(_ uiView: UIView, context: Context) {}
 }
 
 /// Stand-in for the camera feed: the simulator has no camera, so previews of
