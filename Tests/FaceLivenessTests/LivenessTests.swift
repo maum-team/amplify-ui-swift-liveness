@@ -288,6 +288,112 @@ final class FaceLivenessDetectionViewModelTestCase: XCTestCase {
         XCTAssertNotEqual(FaceLivenessDetectionError.sessionInterrupted, .userCancelled)
     }
 
+    /// Losing the face must invalidate the host's pending readiness acknowledgement.
+    func testFaceLossCancelsExternalFreshnessWaitingForHost() async throws {
+        let external = FaceLivenessExternalFreshnessController()
+        viewModel.externalFreshnessController = external
+        let presenter = _LivenessViewController(viewModel: viewModel)
+        var sequenceID: UUID?
+        external.onFreshnessSequencePrepared = { sequenceID = $0.sequenceID }
+        var started = false
+        external.onStarted = { _ in started = true }
+        external.play([], onAcknowledged: { _ in }, onComplete: {})
+        viewModel.livenessState = .init(state: .displayingFreshness)
+
+        viewModel.process(newResult: .noFace)
+        // Drain the face-loss handler and the presenter's queued cancellation.
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async {
+                DispatchQueue.main.async { continuation.resume() }
+            }
+        }
+        external.acknowledgeFreshnessReady(sequenceID: try XCTUnwrap(sequenceID))
+
+        XCTAssertFalse(started)
+        XCTAssertEqual(viewModel.livenessState.state, .awaitingFaceInOvalMatch(.noFace, 0))
+        withExtendedLifetime(presenter) {}
+    }
+
+    func testStoppingRecordingAlsoCancelsPendingExternalPlayback() {
+        let external = FaceLivenessExternalFreshnessController()
+        viewModel.externalFreshnessController = external
+        let presenter = _LivenessViewController(viewModel: viewModel)
+        var cancellations = 0
+        external.onCancelled = { _ in cancellations += 1 }
+        external.onFreshnessSequencePrepared = { _ in }
+        external.play([], onAcknowledged: { _ in }, onComplete: {})
+
+        viewModel.stopRecording()
+
+        XCTAssertEqual(cancellations, 1)
+        withExtendedLifetime(presenter) {}
+    }
+
+    func testCancelledSessionDoesNotStartDelayedFreshness() async throws {
+        let external = FaceLivenessExternalFreshnessController()
+        viewModel.externalFreshnessController = external
+        let presenter = _LivenessViewController(viewModel: viewModel)
+        var prepared = false
+        external.onFreshnessSequencePrepared = { _ in prepared = true }
+        viewModel.challengeReceived = .faceMovementAndLightChallenge("2.0.0")
+        viewModel.livenessState = .init(state: .awaitingFaceInOvalMatch(.moveFaceCloser, 0.5))
+        viewModel.handleInstruction(.match, colorSequences: [])
+        // The match schedules freshness for one second later.
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        viewModel.closeButtonAction()
+        try await Task.sleep(nanoseconds: 1_200_000_000)
+
+        XCTAssertFalse(prepared)
+        XCTAssertEqual(viewModel.livenessState.state, .encounteredUnrecoverableError(.userCancelled))
+        withExtendedLifetime(presenter) {}
+    }
+
+    func testFaceLossBeforeFreshnessStartsReturnsToMatching() async throws {
+        let external = FaceLivenessExternalFreshnessController()
+        viewModel.externalFreshnessController = external
+        let presenter = _LivenessViewController(viewModel: viewModel)
+        var prepared = false
+        external.onFreshnessSequencePrepared = { _ in prepared = true }
+        viewModel.challengeReceived = .faceMovementAndLightChallenge("2.0.0")
+        viewModel.livenessState = .init(state: .awaitingFaceInOvalMatch(.moveFaceCloser, 0.5))
+        viewModel.handleInstruction(.match, colorSequences: [])
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        viewModel.process(newResult: .multipleFaces)
+        try await Task.sleep(nanoseconds: 1_200_000_000)
+
+        XCTAssertFalse(prepared)
+        XCTAssertEqual(viewModel.livenessState.state, .awaitingFaceInOvalMatch(.multipleFaces, 0))
+        withExtendedLifetime(presenter) {}
+    }
+
+    func testFreshnessCompletionDoesNotOverwriteSubsequentCancellation() async {
+        viewModel.livenessState = .init(state: .displayingFreshness)
+        viewModel.handleFreshnessComplete()
+        viewModel.livenessState.unrecoverableStateEncountered(.userCancelled)
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+
+        XCTAssertEqual(viewModel.livenessState.state, .encounteredUnrecoverableError(.userCancelled))
+    }
+
+    func testNativeFreshnessDoesNotOverwriteSubsequentCancellation() async {
+        let presenter = _LivenessViewController(viewModel: viewModel)
+        viewModel.livenessState = .init(state: .faceMatched)
+        presenter.displayFreshness(colorSequences: [])
+        viewModel.livenessState.unrecoverableStateEncountered(.userCancelled)
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+
+        XCTAssertEqual(viewModel.livenessState.state, .encounteredUnrecoverableError(.userCancelled))
+        withExtendedLifetime(presenter) {}
+    }
+
     /// Given:  A `FaceLivenessDetectionViewModel`
     /// When: The initializeLivenessStream() is called for the first time and then called again after 3 seconds
     /// Then: The attempt count is incremented

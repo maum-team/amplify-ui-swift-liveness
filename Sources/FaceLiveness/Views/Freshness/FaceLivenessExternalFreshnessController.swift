@@ -24,6 +24,8 @@ public struct FaceLivenessFreshnessFrame {
 /// The host renders the colors on its own clock, so the challenge never pays a
 /// bridge round trip per color transition.
 public struct FaceLivenessFreshnessSequenceEvent {
+    /// Identifies this attempt, including retries within the same liveness session.
+    public let sequenceID: UUID
     public let frames: [FaceLivenessFreshnessFrame]
     public let nativeDispatchedAt: UInt64
 }
@@ -73,6 +75,8 @@ public final class FaceLivenessExternalFreshnessController {
     public var onStarted: ((UInt64) -> Void)?
     public var onFreshnessSequencePrepared: ((FaceLivenessFreshnessSequenceEvent) -> Void)?
     public var onCompleted: ((UInt64) -> Void)?
+    /// The host must stop its animation and discard pending readiness for this ID.
+    public var onCancelled: ((UUID) -> Void)?
     public var onUiStateChanged: ((FaceLivenessExternalUiStateEvent) -> Void)?
     public var onOvalChanged: ((FaceLivenessExternalOvalEvent) -> Void)?
     public var rendersOvalExternally = false
@@ -82,6 +86,7 @@ public final class FaceLivenessExternalFreshnessController {
 
     private var pendingPlaybackStart: (() -> Void)?
     private var playbackTask: Task<Void, Never>?
+    private var activeSequenceID: UUID?
 
     public init() {}
 
@@ -94,7 +99,7 @@ public final class FaceLivenessExternalFreshnessController {
     /// Auto Layout animation behind an external renderer.
     ///
     /// The whole sequence reaches `onFreshnessSequencePrepared` in a single
-    /// dispatch, and playback starts on one `acknowledgeFreshnessReady()`.
+    /// dispatch, and playback starts on one `acknowledgeFreshnessReady(sequenceID:)`.
     /// Every color transition after that stays on this side of the bridge.
     /// Without a subscriber there is nothing to wait for, so playback starts
     /// right away on the native clock.
@@ -103,12 +108,14 @@ public final class FaceLivenessExternalFreshnessController {
         onAcknowledged: @escaping (Freshness.ColorEvent) -> Void,
         onComplete: @escaping () -> Void
     ) {
-        playbackTask?.cancel()
-        pendingPlaybackStart = nil
+        cancelPlayback()
+        let sequenceID = UUID()
+        activeSequenceID = sequenceID
 
         guard let onFreshnessSequencePrepared else {
             startPlayback(
                 colorSequences,
+                sequenceID: sequenceID,
                 onAcknowledged: onAcknowledged,
                 onComplete: onComplete
             )
@@ -118,12 +125,14 @@ public final class FaceLivenessExternalFreshnessController {
         pendingPlaybackStart = { [weak self] in
             self?.startPlayback(
                 colorSequences,
+                sequenceID: sequenceID,
                 onAcknowledged: onAcknowledged,
                 onComplete: onComplete
             )
         }
         onFreshnessSequencePrepared(
             FaceLivenessFreshnessSequenceEvent(
+                sequenceID: sequenceID,
                 frames: colorSequences.enumerated().map { sequenceNumber, currentColor in
                     let previousColor = sequenceNumber > 0
                         ? colorSequences[sequenceNumber - 1]
@@ -140,10 +149,16 @@ public final class FaceLivenessExternalFreshnessController {
         )
     }
 
-    /// Starts native playback once the host reports the sequence is on screen.
-    ///
-    /// Called at most once per prepared sequence; later calls are ignored.
+    /// Legacy acknowledgement cannot distinguish a delayed response from a previous attempt.
+    @available(*, deprecated, message: "Use acknowledgeFreshnessReady(sequenceID:) for retry-safe readiness")
     public func acknowledgeFreshnessReady() {
+        guard let sequenceID = activeSequenceID else { return }
+        acknowledgeFreshnessReady(sequenceID: sequenceID)
+    }
+
+    /// Starts playback once for the matching attempt; stale or repeated responses are ignored.
+    public func acknowledgeFreshnessReady(sequenceID: UUID) {
+        guard activeSequenceID == sequenceID else { return }
         let startPlayback = pendingPlaybackStart
         pendingPlaybackStart = nil
         startPlayback?()
@@ -151,16 +166,20 @@ public final class FaceLivenessExternalFreshnessController {
 
     private func startPlayback(
         _ colorSequences: [FaceLivenessSession.DisplayColor],
+        sequenceID: UUID,
         onAcknowledged: @escaping (Freshness.ColorEvent) -> Void,
         onComplete: @escaping () -> Void
     ) {
+        guard activeSequenceID == sequenceID else { return }
         onStarted?(Date().timestampMilliseconds)
+        // A synchronous host callback may cancel or replace this attempt.
+        guard activeSequenceID == sequenceID else { return }
 
         playbackTask = Task { @MainActor [weak self] in
             guard let self else { return }
 
             for (sequenceNumber, currentColor) in colorSequences.enumerated() {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, self.activeSequenceID == sequenceID else { return }
 
                 let previousColor = sequenceNumber > 0
                     ? colorSequences[sequenceNumber - 1]
@@ -184,17 +203,25 @@ public final class FaceLivenessExternalFreshnessController {
                 }
             }
 
-            guard !Task.isCancelled else { return }
-            onCompleted?(Date().timestampMilliseconds)
+            guard !Task.isCancelled, self.activeSequenceID == sequenceID else { return }
+            let completedAt = Date().timestampMilliseconds
+            // Commit completion before notifying the host: its cleanup may call cancelPlayback().
+            activeSequenceID = nil
             playbackTask = nil
             onComplete()
+            onCompleted?(completedAt)
         }
     }
 
     public func cancelPlayback() {
+        let cancelledSequenceID = activeSequenceID
+        activeSequenceID = nil
         playbackTask?.cancel()
         playbackTask = nil
         pendingPlaybackStart = nil
+        if let cancelledSequenceID {
+            onCancelled?(cancelledSequenceID)
+        }
     }
 
     public func publishUiState(

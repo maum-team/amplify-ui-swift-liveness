@@ -54,7 +54,7 @@ struct LivenessStateMachine {
     /// to oval matching so a returning face re-matches and the freshness check restarts.
     mutating func faceNotMatched(reason: FaceNotPreparedReason) {
         switch state {
-        case .recording(ovalDisplayed: true), .awaitingFaceInOvalMatch, .displayingFreshness:
+        case .recording(ovalDisplayed: true), .awaitingFaceInOvalMatch, .faceMatched, .displayingFreshness:
             state = .awaitingFaceInOvalMatch(reason, 0)
         default:
             break

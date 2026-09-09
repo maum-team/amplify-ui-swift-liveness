@@ -100,7 +100,7 @@ extension FaceLivenessDetectionViewModel: FaceDetectionResultHandler {
     ///   instruction ("Move face in front of camera" / multiple-faces) and keep the oval-fit
     ///   deadline advancing so the session times out client-side instead of waiting on the
     ///   service to close the socket.
-    /// - During the freshness (color) check, a face that leaves can no longer produce a valid
+    /// - While preparing or displaying the freshness check, a face that leaves cannot produce a valid
     ///   color sequence, so we stop the color flash and send the flow back to oval matching
     ///   (without forcing a failure). A returning face then re-matches and the freshness check
     ///   restarts; if no face returns, the oval-fit timer resolves it via the normal timeout.
@@ -115,9 +115,9 @@ extension FaceLivenessDetectionViewModel: FaceDetectionResultHandler {
                 self.livenessState.faceNotMatched(reason: reason)
                 self.handleNoFaceDetected()
             }
-        case .displayingFreshness:
+        case .faceMatched, .displayingFreshness:
             DispatchQueue.main.async {
-                self.livenessViewControllerDelegate?.stopFreshness()
+                self.stopFreshness()
                 self.livenessState.faceNotMatched(reason: reason)
                 self.handleNoFaceDetected()
             }
@@ -159,7 +159,16 @@ extension FaceLivenessDetectionViewModel: FaceDetectionResultHandler {
                 switch self.challengeReceived{
                 case .faceMovementAndLightChallenge:
                     if let colorSequences = colorSequences {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        self.pendingFreshnessStart?.cancel()
+                        self.pendingFreshnessStart = Task { @MainActor [weak self] in
+                            do {
+                                try await Task.sleep(nanoseconds: 1_000_000_000)
+                            } catch {
+                                return
+                            }
+                            guard let self, !Task.isCancelled,
+                                  self.livenessState.state == .faceMatched else { return }
+                            self.pendingFreshnessStart = nil
                             self.livenessViewControllerDelegate?.displayFreshness(colorSequences: colorSequences)
                         }
                     }

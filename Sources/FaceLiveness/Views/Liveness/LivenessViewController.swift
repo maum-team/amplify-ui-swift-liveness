@@ -150,6 +150,7 @@ extension _LivenessViewController: FaceLivenessViewControllerPresenter {
     }
 
     func displayFreshness(colorSequences: [FaceLivenessSession.DisplayColor]) {
+        guard viewModel.livenessState.state == .faceMatched else { return }
         if let externalFreshnessController = viewModel.externalFreshnessController {
             displayExternalFreshness(
                 colorSequences: colorSequences,
@@ -166,9 +167,7 @@ extension _LivenessViewController: FaceLivenessViewControllerPresenter {
             )
             freshnessView.startOvalPulse(in: freshnessOvalFrame)
         }
-        DispatchQueue.main.async { [weak self] in
-            self?.viewModel.livenessState.displayingFreshness()
-        }
+        viewModel.livenessState.displayingFreshness()
         self.freshness.showColorSequences(
             colorSequences,
             width: UIScreen.main.bounds.width,
@@ -188,14 +187,13 @@ extension _LivenessViewController: FaceLivenessViewControllerPresenter {
     }
 
     func stopFreshness() {
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.freshness.cancel()
-            // Clear the colors but leave the view in the hierarchy so that, if the face
-            // returns and re-matches, `displayFreshness(colorSequences:)` can restart the
-            // flash on the same view.
-            self.freshnessView.clearColors()
-        }
+        // Cancel on this main-actor turn, before returning to oval matching.
+        // Enqueuing another block would let an old completion overtake cancellation.
+        freshness.cancel()
+        viewModel.externalFreshnessController?.cancelPlayback()
+        freshnessView.stopOvalPulse()
+        // Keep the view available for the next matching attempt.
+        freshnessView.clearColors()
     }
 
     func drawOvalInCanvas(_ ovalRect: CGRect) {

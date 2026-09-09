@@ -27,6 +27,7 @@ class FaceLivenessDetectionViewModel: ObservableObject {
     let sessionID: String
     var livenessService: LivenessService?
     weak var externalFreshnessController: FaceLivenessExternalFreshnessController?
+    var pendingFreshnessStart: Task<Void, Never>?
     var usesFullScreenCameraPreview = false
     let faceDetector: FaceDetector
     let faceInOvalMatching: FaceInOvalMatching
@@ -109,6 +110,7 @@ class FaceLivenessDetectionViewModel: ObservableObject {
     }
 
     deinit {
+        pendingFreshnessStart?.cancel()
         NotificationCenter.default.removeObserver(self)
     }
 
@@ -160,7 +162,14 @@ class FaceLivenessDetectionViewModel: ObservableObject {
     }
 
     func stopRecording() {
+        stopFreshness()
         captureSession?.stopRunning()
+    }
+
+    func stopFreshness() {
+        pendingFreshnessStart?.cancel()
+        pendingFreshnessStart = nil
+        livenessViewControllerDelegate?.stopFreshness()
     }
 
     func configureCamera(withinFrame frame: CGRect) -> CALayer? {
@@ -362,9 +371,8 @@ class FaceLivenessDetectionViewModel: ObservableObject {
     }
 
     func handleFreshnessComplete() {
-        DispatchQueue.main.async { [weak self] in
-            self?.livenessState.completedDisplayingFreshness()
-        }
+        guard livenessState.state == .displayingFreshness else { return }
+        livenessState.completedDisplayingFreshness()
     }
     
     func completeNoLightCheck() {

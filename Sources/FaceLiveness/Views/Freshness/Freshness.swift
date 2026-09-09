@@ -15,7 +15,7 @@ class Freshness {
     let initialAlpha: CGFloat
     let secondaryAlpha: CGFloat
     var timer: Timer? = nil
-    private var isCancelled = false
+    private var playbackID = UUID()
 
     init(
         tickRate: Double = 0.01,
@@ -42,9 +42,10 @@ class Freshness {
         onNewColor: @escaping (ColorEvent) -> Void,
         onComplete: @escaping () -> Void
     ) {
+        cancel()
         self.colorSequences = colorSequences
-        self.isCancelled = false
         _showColorSequences(
+            playbackID: playbackID,
             colorIndex: 0,
             previousColor: nil,
             view: view,
@@ -59,13 +60,14 @@ class Freshness {
     /// and `onComplete` is never called. Used when the face is lost mid-freshness and the
     /// sequence can no longer complete successfully.
     func cancel() {
-        isCancelled = true
+        playbackID = UUID()
         timer?.invalidate()
         timer = nil
     }
 
 
     private func _showColorSequences(
+        playbackID: UUID,
         colorIndex: Int,
         previousColor: FaceLivenessSession.DisplayColor?,
         view: FreshnessView,
@@ -73,10 +75,8 @@ class Freshness {
         onNewColor: @escaping (ColorEvent) -> Void,
         onComplete: @escaping () -> Void
     ) {
-        if isCancelled {
-            view.clearColors()
-            return
-        }
+        // A previous attempt must neither emit events nor clear the new attempt's colors.
+        guard self.playbackID == playbackID else { return }
 
         if colorIndex >= colorSequences.count {
             view.clearColors()
@@ -103,10 +103,7 @@ class Freshness {
             DispatchQueue.main.asyncAfter(
                 deadline: .now() + Double(currentFreshnessColor.duration / 1_000)
             ) {
-                guard !self.isCancelled else {
-                    view.clearColors()
-                    return
-                }
+                guard self.playbackID == playbackID else { return }
                 onNewColor(
                     .init(
                         currentColor: self.colorSequences[colorIndex + 1],
@@ -116,6 +113,7 @@ class Freshness {
                     )
                 )
                 self._showColorSequences(
+                        playbackID: playbackID,
                         colorIndex: colorIndex + 1,
                         previousColor: currentFreshnessColor,
                         view: view,
@@ -135,9 +133,8 @@ class Freshness {
             }
 
             self.timer = Timer.scheduledTimer(withTimeInterval: tickRate, repeats: true) { timer in
-                guard !self.isCancelled else {
+                guard self.playbackID == playbackID else {
                     timer.invalidate()
-                    view.clearColors()
                     return
                 }
                 msElapsed += self.tickRate
@@ -156,6 +153,7 @@ class Freshness {
                         )
                     }
                     self._showColorSequences(
+                        playbackID: playbackID,
                         colorIndex: colorIndex + 1,
                         previousColor: currentFreshnessColor,
                         view: view,
