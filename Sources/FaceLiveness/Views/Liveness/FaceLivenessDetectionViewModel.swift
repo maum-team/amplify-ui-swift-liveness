@@ -26,6 +26,8 @@ class FaceLivenessDetectionViewModel: ObservableObject {
     let videoChunker: VideoChunker
     let sessionID: String
     var livenessService: LivenessService?
+    weak var externalFreshnessController: FaceLivenessExternalFreshnessController?
+    var pendingFreshnessStart: Task<Void, Never>?
     let faceDetector: FaceDetector
     let faceInOvalMatching: FaceInOvalMatching
     let challengeID: String = UUID().uuidString
@@ -34,7 +36,9 @@ class FaceLivenessDetectionViewModel: ObservableObject {
     var hasSentFinalVideoEvent = false
     var hasSentFirstVideo = false
     var layerRectConverted: (CGRect) -> CGRect = { $0 }
-    var sessionConfiguration: FaceLivenessSession.SessionConfiguration?
+    var sessionConfiguration: FaceLivenessSession.SessionConfiguration? {
+        didSet { publishPreparationOval() }
+    }
     var challengeReceived: Challenge?
     var normalizeFace: (DetectedFace) -> DetectedFace = { $0 }
     var provideSingleFrame: ((UIImage) -> Void)?
@@ -73,7 +77,8 @@ class FaceLivenessDetectionViewModel: ObservableObject {
         closeButtonAction: @escaping () -> Void,
         sessionID: String,
         isPreviewScreenEnabled: Bool,
-        challengeOptions: ChallengeOptions
+        challengeOptions: ChallengeOptions,
+        externalFreshnessController: FaceLivenessExternalFreshnessController? = nil
     ) {
         self.closeButtonAction = closeButtonAction
         self.videoChunker = videoChunker
@@ -83,6 +88,7 @@ class FaceLivenessDetectionViewModel: ObservableObject {
         self.faceInOvalMatching = faceInOvalMatching
         self.isPreviewScreenEnabled = isPreviewScreenEnabled
         self.challengeOptions = challengeOptions
+        self.externalFreshnessController = externalFreshnessController
 
         self.closeButtonAction = { [weak self] in
             DispatchQueue.main.async {
@@ -101,6 +107,7 @@ class FaceLivenessDetectionViewModel: ObservableObject {
     }
 
     deinit {
+        pendingFreshnessStart?.cancel()
         NotificationCenter.default.removeObserver(self)
     }
 
@@ -152,7 +159,14 @@ class FaceLivenessDetectionViewModel: ObservableObject {
     }
 
     func stopRecording() {
+        if externalFreshnessController != nil { stopFreshness() }
         captureSession?.stopRunning()
+    }
+
+    func stopFreshness() {
+        pendingFreshnessStart?.cancel()
+        pendingFreshnessStart = nil
+        livenessViewControllerDelegate?.stopFreshness()
     }
 
     /// Ends the check with `error` unless it has already finished, so the terminal state is
@@ -184,6 +198,19 @@ class FaceLivenessDetectionViewModel: ObservableObject {
                 )
             }
             return nil
+        }
+    }
+
+    /// RN can draw the service's real target before face preparation completes. Presentation only:
+    /// do not set ovalRect, advance the state machine, or emit the initial-face event here.
+    func publishPreparationOval() {
+        guard externalFreshnessController?.rendersOvalExternally == true,
+              !cameraViewRect.isEmpty, let ovalMatchChallenge else { return }
+        switch livenessState.state {
+        case .initial, .pendingFacePreparedConfirmation, .waitForRecording, .recording(ovalDisplayed: false):
+            livenessViewControllerDelegate?.drawOvalInCanvas(computeOvalRect(for: ovalMatchChallenge))
+        default:
+            break
         }
     }
 
@@ -397,6 +424,12 @@ class FaceLivenessDetectionViewModel: ObservableObject {
     }
 
     func handleFreshnessComplete() {
+        if externalFreshnessController != nil {
+            guard livenessState.state == .displayingFreshness else { return }
+            livenessState.completedDisplayingFreshness()
+            return
+        }
+
         DispatchQueue.main.async { [weak self] in
             self?.livenessState.completedDisplayingFreshness()
         }

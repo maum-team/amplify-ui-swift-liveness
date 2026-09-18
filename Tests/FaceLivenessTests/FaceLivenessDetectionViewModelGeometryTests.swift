@@ -37,6 +37,38 @@ final class FaceLivenessDetectionViewModelGeometryTests: XCTestCase {
         LivenessGeometryFixture.expectedOval(forPreviewWidth: width)
     }
 
+    func testRNPreparationOvalMatchesRecordingOvalWithoutAdvancingMatching() {
+        let controller = FaceLivenessExternalFreshnessController()
+        controller.rendersOvalExternally = true
+        viewModel.externalFreshnessController = controller
+        let configuration = viewModel.sessionConfiguration
+        viewModel.sessionConfiguration = nil
+        viewModel.cameraViewRect = LivenessPreviewGeometry.previewRect(fittingIn: .init(width: 393, height: 852))
+        viewModel.sessionConfiguration = configuration
+        let preparationOval = presenter.drawnOvalRects.last
+        XCTAssertNotNil(preparationOval)
+        XCTAssertEqual(viewModel.ovalRect, .zero)
+        XCTAssertEqual(viewModel.livenessState.state, .initial)
+
+        viewModel.livenessState.beginRecording()
+        drawOvalAndWaitUntilDisplayed(viewModel)
+        XCTAssertEqual(preparationOval, presenter.drawnOvalRects.last)
+        XCTAssertEqual(preparationOval, viewModel.ovalRect)
+    }
+
+    func testRNPreparationOvalWaitsForLayoutWhenConfigurationArrivesFirst() {
+        let controller = FaceLivenessExternalFreshnessController()
+        controller.rendersOvalExternally = true
+        viewModel.externalFreshnessController = controller
+        viewModel.publishPreparationOval()
+        XCTAssertTrue(presenter.drawnOvalRects.isEmpty)
+        viewModel.cameraViewRect = LivenessPreviewGeometry.previewRect(fittingIn: .init(width: 393, height: 852))
+        viewModel.publishPreparationOval()
+        XCTAssertEqual(presenter.drawnOvalRects.count, 1)
+        XCTAssertEqual(viewModel.ovalRect, .zero)
+        XCTAssertEqual(viewModel.livenessState.state, .initial)
+    }
+
     // MARK: - First draw
 
     /// Given: A view model whose camera rect was fitted to a phone-portrait viewport

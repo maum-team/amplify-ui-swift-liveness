@@ -60,22 +60,30 @@ extension FaceLivenessDetectionViewModel: FaceDetectionResultHandler {
                     )
                 })
             case .recording(ovalDisplayed: true):
-                let instruction = faceInOvalMatching.faceMatchState(
+                var instruction = faceInOvalMatching.faceMatchState(
                     for: normalizedFace.boundingBox,
                     in: ovalRect,
                     challengeConfig: ovalMatchChallenge
                 )
+                if let controller = externalFreshnessController {
+                    instruction = controller.applyingMinimumFaceSize(
+                        to: instruction, face: normalizedFace.boundingBox, oval: ovalRect)
+                }
 
                 handleInstruction(
                     instruction,
                     colorSequences: colorChallenge?.colors
                 )
             case .awaitingFaceInOvalMatch:
-                let instruction = faceInOvalMatching.faceMatchState(
+                var instruction = faceInOvalMatching.faceMatchState(
                     for: normalizedFace.boundingBox,
                     in: ovalRect,
                     challengeConfig: ovalMatchChallenge
                 )
+                if let controller = externalFreshnessController {
+                    instruction = controller.applyingMinimumFaceSize(
+                        to: instruction, face: normalizedFace.boundingBox, oval: ovalRect)
+                }
 
                 handleInstruction(
                     instruction,
@@ -100,6 +108,22 @@ extension FaceLivenessDetectionViewModel: FaceDetectionResultHandler {
     ///   (without forcing a failure). A returning face then re-matches and the freshness check
     ///   restarts; if no face returns, the oval-fit timer resolves it via the normal timeout.
     private func handleFaceUnavailable(reason: LivenessStateMachine.FaceNotPreparedReason) {
+        // Only RN waits for a host readiness response before displaying colors.
+        // Keep its pre-freshness retry outside the upstream state machine.
+        if externalFreshnessController != nil,
+           livenessState.state == .faceMatched || livenessState.state == .displayingFreshness {
+            DispatchQueue.main.async {
+                self.stopFreshness()
+                if self.livenessState.state == .faceMatched {
+                    self.livenessState = .init(state: .awaitingFaceInOvalMatch(reason, 0))
+                } else {
+                    self.livenessState.faceNotMatched(reason: reason)
+                }
+                self.handleNoFaceDetected()
+            }
+            return
+        }
+
         switch livenessState.state {
         case .pendingFacePreparedConfirmation:
             DispatchQueue.main.async {
@@ -154,7 +178,22 @@ extension FaceLivenessDetectionViewModel: FaceDetectionResultHandler {
                 switch self.challengeReceived{
                 case .faceMovementAndLightChallenge:
                     if let colorSequences = colorSequences {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        guard self.externalFreshnessController != nil else {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                                self.livenessViewControllerDelegate?.displayFreshness(colorSequences: colorSequences)
+                            }
+                            break
+                        }
+                        self.pendingFreshnessStart?.cancel()
+                        self.pendingFreshnessStart = Task { @MainActor [weak self] in
+                            do {
+                                try await Task.sleep(nanoseconds: 1_000_000_000)
+                            } catch {
+                                return
+                            }
+                            guard let self, !Task.isCancelled,
+                                  self.livenessState.state == .faceMatched else { return }
+                            self.pendingFreshnessStart = nil
                             self.livenessViewControllerDelegate?.displayFreshness(colorSequences: colorSequences)
                         }
                     }

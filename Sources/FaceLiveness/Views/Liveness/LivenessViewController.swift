@@ -88,6 +88,7 @@ final class _LivenessViewController: UIViewController {
             guard let self else { return }
             self.view.layer.insertSublayer(avLayer, at: 0)
             self.view.layoutIfNeeded()
+            self.viewModel.publishPreparationOval()
 
             self.viewModel.startSession()
         }
@@ -103,6 +104,7 @@ final class _LivenessViewController: UIViewController {
 
         previewLayer.frame = cameraFrame
         viewModel.cameraViewRect = cameraFrame
+        viewModel.publishPreparationOval()
         viewModel.redrawOvalForCurrentCameraViewRect()
     }
 
@@ -127,6 +129,10 @@ extension _LivenessViewController: FaceLivenessViewControllerPresenter {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             guard let previewLayer = self.previewLayer else { return }
+            if self.viewModel.externalFreshnessController?.rendersOvalExternally == true {
+                self.viewModel.stopRecording()
+                return
+            }
             let imageView = UIImageView(image: uiImage)
             imageView.frame = previewLayer.frame
             self.view.addSubview(imageView)
@@ -137,6 +143,12 @@ extension _LivenessViewController: FaceLivenessViewControllerPresenter {
     }
 
     func displayFreshness(colorSequences: [FaceLivenessSession.DisplayColor]) {
+        if let controller = viewModel.externalFreshnessController {
+            guard viewModel.livenessState.state == .faceMatched else { return }
+            displayExternalFreshness(colorSequences: colorSequences, controller: controller)
+            return
+        }
+
         self.ovalView?.setNeedsDisplay()
         DispatchQueue.main.async { [weak self] in
             self?.viewModel.livenessState.displayingFreshness()
@@ -159,6 +171,11 @@ extension _LivenessViewController: FaceLivenessViewControllerPresenter {
     }
 
     func stopFreshness() {
+        if let controller = viewModel.externalFreshnessController {
+            controller.cancelPlayback()
+            return
+        }
+
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.freshness.cancel()
@@ -173,6 +190,15 @@ extension _LivenessViewController: FaceLivenessViewControllerPresenter {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             guard let previewLayer = self.previewLayer else { return }
+
+            if let controller = self.viewModel.externalFreshnessController,
+               controller.rendersOvalExternally {
+                controller.publishOval(
+                    frame: previewLayer.convert(ovalRect, to: self.view.layer),
+                    viewport: self.view.bounds
+                )
+                return
+            }
 
             // drop any previous oval so a redraw replaces it rather than layering over it
             self.ovalView?.removeFromSuperview()
