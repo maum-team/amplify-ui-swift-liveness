@@ -34,6 +34,7 @@ public struct FaceLivenessDetectorView: View {
 
     let disableStartView: Bool
     let challengeOptions: ChallengeOptions
+    let presentationController: FaceLivenessPresentationController?
     var cancelButtonOptions = CancelButtonOptions()
     let onCompletion: (Result<Void, FaceLivenessDetectionError>) -> Void
 
@@ -45,6 +46,7 @@ public struct FaceLivenessDetectorView: View {
         region: String,
         disableStartView: Bool = false,
         challengeOptions: ChallengeOptions = .init(),
+        presentationController: FaceLivenessPresentationController? = nil,
         isPresented: Binding<Bool>,
         onCompletion: @escaping (Result<Void, FaceLivenessDetectionError>) -> Void
     ) {        
@@ -52,6 +54,7 @@ public struct FaceLivenessDetectorView: View {
         self._isPresented = isPresented
         self.onCompletion = onCompletion
         self.challengeOptions = challengeOptions
+        self.presentationController = presentationController
 
         self.sessionTask = Task {
             let session = try await AWSPredictionsPlugin.startFaceLivenessSession(
@@ -91,6 +94,7 @@ public struct FaceLivenessDetectorView: View {
         region: String,
         disableStartView: Bool = false,
         challengeOptions: ChallengeOptions = .init(),
+        presentationController: FaceLivenessPresentationController? = nil,
         isPresented: Binding<Bool>,
         onCompletion: @escaping (Result<Void, FaceLivenessDetectionError>) -> Void,
         captureSession: LivenessCaptureSession
@@ -99,6 +103,7 @@ public struct FaceLivenessDetectorView: View {
         self._isPresented = isPresented
         self.onCompletion = onCompletion
         self.challengeOptions = challengeOptions
+        self.presentationController = presentationController
 
         self.sessionTask = Task {
             let session = try await AWSPredictionsPlugin.startFaceLivenessSession(
@@ -152,6 +157,7 @@ public struct FaceLivenessDetectorView: View {
             advanceIfWaitingOnPortrait()
         }
         .onReceive(viewModel.$livenessState) { output in
+            presentationController?.publish(output)
             // one observer for every display state, so any exit that reaches a terminal
             // state dismisses and fires the host's completion exactly once
             switch output.state {
@@ -252,9 +258,11 @@ public struct FaceLivenessDetectorView: View {
             _FaceLivenessDetectionView(
                 viewModel: viewModel,
                 cancelButtonOptions: cancelButtonOptions,
+                usesExternalPresentation: presentationController != nil,
                 videoView: {
                     CameraView(
-                        faceLivenessDetectionViewModel: viewModel
+                        faceLivenessDetectionViewModel: viewModel,
+                        presentationController: presentationController
                     )
                 }
             )

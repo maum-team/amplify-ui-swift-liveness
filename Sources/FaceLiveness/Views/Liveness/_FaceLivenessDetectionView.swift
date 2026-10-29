@@ -12,14 +12,17 @@ struct _FaceLivenessDetectionView<VideoView: View>: View {
     @ObservedObject var viewModel: FaceLivenessDetectionViewModel
     @Binding var displayResultsView: Bool
     let cancelButtonOptions: CancelButtonOptions
+    let usesExternalPresentation: Bool
 
     init(
         viewModel: FaceLivenessDetectionViewModel,
         cancelButtonOptions: CancelButtonOptions = .init(),
+        usesExternalPresentation: Bool = false,
         @ViewBuilder videoView: @escaping () -> VideoView
     ) {
         self.viewModel = viewModel
         self.cancelButtonOptions = cancelButtonOptions
+        self.usesExternalPresentation = usesExternalPresentation
         self.videoView = videoView()
 
         self._displayResultsView = .init(
@@ -47,7 +50,20 @@ struct _FaceLivenessDetectionView<VideoView: View>: View {
         )
     }
 
+    @ViewBuilder
     var body: some View {
+        if usesExternalPresentation {
+            ZStack {
+                Color.black
+                videoView
+            }
+            .edgesIgnoringSafeArea(.all)
+        } else {
+            nativeContent
+        }
+    }
+
+    private var nativeContent: some View {
         ZStack {
             ZStack {
                 Color.black

@@ -14,6 +14,7 @@ import Amplify
 
 final class _LivenessViewController: UIViewController {
     let viewModel: FaceLivenessDetectionViewModel
+    let overlayController: FaceLivenessPresentationController?
     var previewLayer: CALayer?
 
     var ovalExists = false
@@ -23,9 +24,11 @@ final class _LivenessViewController: UIViewController {
     var readyForOval = false
 
     init(
-        viewModel: FaceLivenessDetectionViewModel
+        viewModel: FaceLivenessDetectionViewModel,
+        presentationController: FaceLivenessPresentationController? = nil
     ) {
         self.viewModel = viewModel
+        self.overlayController = presentationController
         super.init(nibName: nil, bundle: nil)
         viewModel.livenessViewControllerDelegate = self
         viewModel.normalizeFace = { [weak viewModel] face in
@@ -67,6 +70,12 @@ final class _LivenessViewController: UIViewController {
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         updateGeometryForCurrentViewSize()
+        publishPresentationOval()
+    }
+
+    private func publishPresentationOval() {
+        guard let ovalView else { return }
+        overlayController?.publishOval(frame: ovalView.ovalFrameInView, viewport: view.bounds)
     }
 
     private func layoutSubviews() {
@@ -185,6 +194,7 @@ extension _LivenessViewController: FaceLivenessViewControllerPresenter {
             // is relative to the preview, wherever the preview sits.
             let ovalView = OvalView(frame: self.view.bounds, ovalFrame: ovalRect)
             ovalView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            ovalView.isHidden = self.overlayController != nil
             self.ovalView = ovalView
             self.view.insertSubview(
                 ovalView,
@@ -193,6 +203,7 @@ extension _LivenessViewController: FaceLivenessViewControllerPresenter {
 
             self.ovalRect = ovalRect
             self.ovalExists = true
+            self.publishPresentationOval()
         }
     }
     
