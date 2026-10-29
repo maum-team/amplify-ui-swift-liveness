@@ -22,16 +22,19 @@ public struct FaceLivenessPresentationOval: Equatable {
 }
 
 /// Observes presentation data for a host-rendered overlay. Matching, camera capture,
-/// challenge colors and timing, and service events remain owned by FaceLiveness.
+/// playback timing and service events remain owned by FaceLiveness.
 @MainActor
 public final class FaceLivenessPresentationController {
+    public let colorRenderer: FaceLivenessColorRenderer?
     public var onStateChanged: ((FaceLivenessUIState) -> Void)?
     public var onOvalChanged: ((FaceLivenessPresentationOval) -> Void)?
 
     private var lastState: FaceLivenessUIState?
     private var lastOval: FaceLivenessPresentationOval?
 
-    public init() {}
+    public init(colorRenderer: FaceLivenessColorRenderer? = nil) {
+        self.colorRenderer = colorRenderer
+    }
 
     func publish(_ stateMachine: LivenessStateMachine) {
         guard let state = presentation(for: stateMachine), state != lastState else { return }

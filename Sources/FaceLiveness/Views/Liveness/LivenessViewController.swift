@@ -162,24 +162,24 @@ extension _LivenessViewController: FaceLivenessViewControllerPresenter {
     }
 
     func displayFreshness(colorSequences: [FaceLivenessSession.DisplayColor]) {
-        DispatchQueue.main.async { [weak self] in
-            self?.viewModel.livenessState.displayingFreshness()
+        // Both modes run the upstream playback body in playFreshness below.
+        guard let renderer = overlayController?.colorRenderer,
+              renderer.onSequencePrepared != nil else {
+            playFreshness(colorSequences: colorSequences)
+            return
         }
-        self.freshness.showColorSequences(
-            colorSequences,
-            width: UIScreen.main.bounds.width,
-            height: UIScreen.main.bounds.height,
-            view: self.freshnessView,
-            onNewColor: { [weak self] colorEvent in
-                self?.viewModel.sendColorDisplayedEvent(colorEvent)
-            },
-            onComplete: { [weak self] in
-                guard let self else { return }
-                self.freshnessView.removeFromSuperview()
 
-                self.viewModel.handleFreshnessComplete()
+        // Skia replaces only the visible layer; upstream still sends color events
+        // and completes recording through its original Freshness callbacks.
+        // shortcut: Skia uses a separate UI clock; synchronize the renderer if
+        // device tests show display drift or confidence regression.
+        freshnessView.isHidden = true
+        renderer.prepare(colorSequences) { [weak self, weak renderer] sequenceID in
+            guard let self, !self.viewModel.livenessState.hasEnded else { return }
+            self.playFreshness(colorSequences: colorSequences) {
+                renderer?.complete(sequenceID: sequenceID)
             }
-        )
+        }
     }
 
     func drawOvalInCanvas(_ ovalRect: CGRect) {
@@ -210,4 +210,32 @@ extension _LivenessViewController: FaceLivenessViewControllerPresenter {
     func completeNoLightCheck() {
         self.viewModel.completeNoLightCheck()
     }
+
+    // Upstream 1.5.3 displayFreshness body, shared by Native and RN/Skia.
+    // Keep color-event reporting and video finalization on this native path.
+    private func playFreshness(
+        colorSequences: [FaceLivenessSession.DisplayColor],
+        onComplete: (() -> Void)? = nil
+    ) {
+        DispatchQueue.main.async { [weak self] in
+            self?.viewModel.livenessState.displayingFreshness()
+        }
+        self.freshness.showColorSequences(
+            colorSequences,
+            width: UIScreen.main.bounds.width,
+            height: UIScreen.main.bounds.height,
+            view: self.freshnessView,
+            onNewColor: { [weak self] colorEvent in
+                self?.viewModel.sendColorDisplayedEvent(colorEvent)
+            },
+            onComplete: { [weak self] in
+                guard let self else { return }
+                self.freshnessView.removeFromSuperview()
+
+                onComplete?()
+                self.viewModel.handleFreshnessComplete()
+            }
+        )
+    }
+
 }
